@@ -58,13 +58,18 @@ export interface Column<TRow, TSummaryRow = unknown> {
 
 export interface CalculatedColumn<TRow, TSummaryRow = unknown> extends Column<TRow, TSummaryRow> {
   idx: number;
-  width: number;
-  left: number;
   resizable: boolean;
   sortable: boolean;
-  isLastFrozenColumn?: boolean;
-  rowGroup?: boolean;
+  frozen: boolean;
+  isLastFrozenColumn: boolean;
+  rowGroup: boolean;
   formatter: React.ComponentType<FormatterProps<TRow, TSummaryRow>>;
+  groupFormatter: React.ComponentType<GroupFormatterProps<TRow, TSummaryRow>>;
+}
+
+export interface ColumnMetric {
+  width: number;
+  left: number;
 }
 
 export interface Position {
@@ -178,6 +183,11 @@ export interface FilterRendererProps<TRow, TFilterValue = unknown, TSummaryRow =
 }
 
 export type Filters = Record<string, any>;
+
+export interface RowsChangeData<R, SR = unknown> {
+  indexes: number[];
+  column: CalculatedColumn<R, SR>;
+}
 
 export interface SelectRowEvent {
   rowIdx: number;

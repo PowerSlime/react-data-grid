@@ -16,7 +16,6 @@ import GroupRowRenderer from './GroupRow';
 import SummaryRow from './SummaryRow';
 import {
   assertIsValidKeyGetter,
-  getColumnScrollPosition,
   onEditorNavigation,
   getNextSelectedCellPosition,
   isSelectedCellEditable,
@@ -31,6 +30,7 @@ import type {
   Filters,
   Position,
   RowRendererProps,
+  RowsChangeData,
   SelectRowEvent,
   SelectedCellProps,
   EditCellProps,
@@ -89,7 +89,7 @@ export interface DataGridProps<R, SR = unknown> extends SharedDivProps {
   summaryRows?: readonly SR[];
   /** The getter should return a unique key for each row */
   rowKeyGetter?: (row: R) => React.Key;
-  onRowsChange?: (rows: R[]) => void;
+  onRowsChange?: (rows: R[], data: RowsChangeData<R, SR>) => void;
 
   /**
    * Dimensions props
@@ -237,7 +237,7 @@ function DataGrid<R, SR>({
   const selectRowWrapper = useLatestFunc(selectRow);
   const selectCellWrapper = useLatestFunc(selectCell);
   const toggleGroupWrapper = useLatestFunc(toggleGroup);
-  const handleFormatterRowChangeWrapper = useLatestFunc(handleFormatterRowChange);
+  const handleFormatterRowChangeWrapper = useLatestFunc(updateRow);
 
   /**
    * computed values
@@ -249,7 +249,7 @@ function DataGrid<R, SR>({
   const clientHeight = gridHeight - totalHeaderHeight - summaryRowsCount * rowHeight;
   const isSelectable = selectedRows !== undefined && onSelectedRowsChange !== undefined;
 
-  const { columns, viewportColumns, totalColumnWidth, lastFrozenColumnIndex, totalFrozenColumnWidth, groupBy } = useViewportColumns({
+  const { columns, viewportColumns, layoutCssVars, columnMetrics, totalColumnWidth, lastFrozenColumnIndex, totalFrozenColumnWidth, groupBy } = useViewportColumns({
     rawColumns,
     columnWidths,
     scrollLeft,
@@ -268,7 +268,7 @@ function DataGrid<R, SR>({
     expandedGroupIds
   });
 
-  const hasGroups = groupBy.length > 0 && rowGrouper;
+  const hasGroups = groupBy.length > 0 && typeof rowGrouper === 'function';
   const minColIdx = hasGroups ? -1 : 0;
 
   // Cell drag is not supported on a treegrid
@@ -453,6 +453,16 @@ function DataGrid<R, SR>({
     return hasGroups ? rawRows.indexOf(rows[rowIdx] as R) : rowIdx;
   }
 
+  function updateRow(rowIdx: number, row: R) {
+    if (typeof onRowsChange !== 'function') return;
+    const updatedRows = [...rawRows];
+    updatedRows[rowIdx] = row;
+    onRowsChange(updatedRows, {
+      indexes: [rowIdx],
+      column: columns[selectedPosition.idx]
+    });
+  }
+
   function commitEditorChanges() {
     if (
       columns[selectedPosition.idx]?.editor === undefined
@@ -461,9 +471,8 @@ function DataGrid<R, SR>({
       return;
     }
 
-    const updatedRows = [...rawRows];
-    updatedRows[getRawRowIdx(selectedPosition.rowIdx)] = selectedPosition.row;
-    onRowsChange?.(updatedRows);
+    const rowIdx = getRawRowIdx(selectedPosition.rowIdx);
+    updateRow(rowIdx, selectedPosition.row);
   }
 
   function handleCopy() {
@@ -490,10 +499,7 @@ function DataGrid<R, SR>({
       targetColumnKey: columns[idx].key
     });
 
-    const updatedRows = [...rawRows];
-    updatedRows[rowIdx] = updatedTargetRow;
-
-    onRowsChange(updatedRows);
+    updateRow(rowIdx, updatedTargetRow);
   }
 
   function handleCellInput(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -536,13 +542,17 @@ function DataGrid<R, SR>({
     const startRowIndex = rowIdx < overRowIdx ? rowIdx + 1 : overRowIdx;
     const endRowIndex = rowIdx < overRowIdx ? overRowIdx + 1 : rowIdx;
     const targetRows = rawRows.slice(startRowIndex, endRowIndex);
-
-    const updatedTargetRows = onFill({ columnKey: columns[idx].key, sourceRow, targetRows });
+    const column = columns[idx];
+    const updatedTargetRows = onFill({ columnKey: column.key, sourceRow, targetRows });
     const updatedRows = [...rawRows];
+    const indexes: number[] = [];
+
     for (let i = startRowIndex; i < endRowIndex; i++) {
       updatedRows[i] = updatedTargetRows[i - startRowIndex];
+      indexes.push(i);
     }
-    onRowsChange(updatedRows);
+
+    onRowsChange(updatedRows, { indexes, column });
     setDraggedOverRowIdx(undefined);
   }
 
@@ -574,27 +584,23 @@ function DataGrid<R, SR>({
     const { idx, rowIdx } = selectedPosition;
     const sourceRow = rawRows[rowIdx];
     const targetRows = rawRows.slice(rowIdx + 1);
-
-    const updatedTargetRows = onFill({ columnKey: columns[idx].key, sourceRow, targetRows });
+    const column = columns[idx];
+    const updatedTargetRows = onFill({ columnKey: column.key, sourceRow, targetRows });
     const updatedRows = [...rawRows];
+    const indexes: number[] = [];
+
     for (let i = rowIdx + 1; i < updatedRows.length; i++) {
       updatedRows[i] = updatedTargetRows[i - rowIdx - 1];
+      indexes.push(i);
     }
-    onRowsChange(updatedRows);
-  }
 
-  function handleFormatterRowChange(rowIdx: number, row: Readonly<R>) {
-    const newRows = [...rawRows];
-    newRows[rowIdx] = row;
-    onRowsChange?.(newRows);
+    onRowsChange(updatedRows, { indexes, column });
   }
 
   function handleEditorRowChange(row: Readonly<R>, commitChanges?: boolean) {
     if (selectedPosition.mode === 'SELECT') return;
     if (commitChanges) {
-      const updatedRows = [...rawRows];
-      updatedRows[getRawRowIdx(selectedPosition.rowIdx)] = row;
-      onRowsChange?.(updatedRows);
+      updateRow(getRawRowIdx(selectedPosition.rowIdx), row);
       closeEditor();
     } else {
       setSelectedPosition(position => ({ ...position, row }));
@@ -644,12 +650,13 @@ function DataGrid<R, SR>({
 
     if (typeof idx === 'number' && idx > lastFrozenColumnIndex) {
       const { clientWidth } = current;
-      const { left, width } = columns[idx];
-      const isCellAtLeftBoundary = left < scrollLeft + width + totalFrozenColumnWidth;
+      const { left, width } = columnMetrics.get(columns[idx])!;
+      const isCellAtLeftBoundary = left < scrollLeft + totalFrozenColumnWidth;
       const isCellAtRightBoundary = left + width > clientWidth + scrollLeft;
-      if (isCellAtLeftBoundary || isCellAtRightBoundary) {
-        const newScrollLeft = getColumnScrollPosition(columns, idx, scrollLeft, clientWidth);
-        current.scrollLeft = scrollLeft + newScrollLeft;
+      if (isCellAtLeftBoundary) {
+        current.scrollLeft = left - totalFrozenColumnWidth;
+      } else if (isCellAtRightBoundary) {
+        current.scrollLeft = left + width - clientWidth;
       }
     }
 
@@ -891,7 +898,8 @@ function DataGrid<R, SR>({
         '--header-row-height': `${headerRowHeight}px`,
         '--filter-row-height': `${headerFiltersHeight}px`,
         '--row-width': `${totalColumnWidth}px`,
-        '--row-height': `${rowHeight}px`
+        '--row-height': `${rowHeight}px`,
+        ...layoutCssVars
       } as unknown as React.CSSProperties}
       ref={gridRef}
       onScroll={handleScroll}
